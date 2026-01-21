@@ -20,6 +20,12 @@ export class Playwright implements INodeType {
     defaults: {
         name: 'Playwright',
     },
+    credentials: [
+        {
+            name: 'playwrightCredentials',
+            required: true,
+        },
+    ],
     inputs: [
         {
             displayName: 'Input',
@@ -314,6 +320,10 @@ return [{
     async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
         const items = this.getInputData();
         const returnData: INodeExecutionData[] = [];
+        
+        // Move require outside loop to avoid repeated requires
+        const playwright = require('playwright');
+        const browsersPath = join(__dirname, '..', 'browsers');
 
         for (let i = 0; i < items.length; i++) {
             const operation = this.getNodeParameter('operation', i) as string;
@@ -321,26 +331,46 @@ return [{
             const browserOptions = this.getNodeParameter('browserOptions', i) as IBrowserOptions;
 
             try {
-                const playwright = require('playwright');
-                const browsersPath = join(__dirname, '..', 'browsers');
+                // Get credentials
+                const credentials = await this.getCredentials('playwrightCredentials');
+                const connectionType = credentials.connectionType as string;
 
-                // Get browser executable path
+                let browser;
                 let executablePath;
-                try {
-                    executablePath = getBrowserExecutablePath(browserType, browsersPath);
-                } catch (error) {
-                    console.error(`Browser path error: ${error.message}`);
-                    await installBrowser(browserType);
-                    executablePath = getBrowserExecutablePath(browserType, browsersPath);
+
+                if (connectionType === 'connect') {
+                    const endpointUrl = credentials.endpointUrl as string;
+                    
+                    if (browserType !== 'chromium') {
+                        throw new Error('Connect Over CDP is only supported for Chromium-based browsers. Please select "Chromium" as the Browser.');
+                    }
+
+                    console.log(`Connecting to browser via CDP: ${endpointUrl}`);
+                    browser = await playwright.chromium.connectOverCDP(endpointUrl, {
+                        slowMo: browserOptions.slowMo || 0,
+                    });
+                } else {
+                    // Launch mode
+                    executablePath = credentials.executablePath as string;
+                    
+                    if (!executablePath) {
+                        try {
+                            executablePath = getBrowserExecutablePath(browserType, browsersPath);
+                        } catch (error) {
+                            console.error(`Browser path error: ${error.message}`);
+                            await installBrowser(browserType);
+                            executablePath = getBrowserExecutablePath(browserType, browsersPath);
+                        }
+                    }
+
+                    console.log(`Launching browser from: ${executablePath}`);
+
+                    browser = await playwright[browserType].launch({
+                        headless: browserOptions.headless !== false,
+                        slowMo: browserOptions.slowMo || 0,
+                        executablePath,
+                    });
                 }
-
-                console.log(`Launching browser from: ${executablePath}`);
-
-                const browser = await playwright[browserType].launch({
-                    headless: browserOptions.headless !== false,
-                    slowMo: browserOptions.slowMo || 0,
-                    executablePath,
-                });
 
                 const context = await browser.newContext();
                 const page = await context.newPage();
